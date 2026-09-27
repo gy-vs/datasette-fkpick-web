@@ -7,6 +7,7 @@ import urllib.parse
 import markupsafe
 
 from datasette.column_types import SQLiteType
+from datasette.database import QueryInterrupted
 from datasette.extras import extra_names_from_request
 from datasette.plugins import pm
 from datasette.events import (
@@ -300,6 +301,57 @@ async def _table_insert_ui(
         "columns": columns,
         "primaryKeys": pks,
     }
+
+
+async def _foreign_key_other_column(db, fk):
+    # REFERENCES other_table without a column means its primary key
+    other_column = fk["other_column"]
+    if other_column is None:
+        pks = await db.primary_keys(fk["other_table"])
+        if len(pks) == 1:
+            other_column = pks[0]
+    return other_column
+
+
+async def _table_foreign_keys_ui(
+    datasette, request, db, database_name, table_name, is_view
+):
+    """Foreign key metadata for the insert/edit row dialogs, or None."""
+    if is_view or not db.is_mutable:
+        return None
+    permissions = await datasette.allowed_many(
+        actions=["insert-row", "update-row"],
+        resource=TableResource(database=database_name, table=table_name),
+        actor=request.actor,
+    )
+    if not (permissions.get("insert-row") or permissions.get("update-row")):
+        return None
+    foreign_keys = await db.foreign_keys_for_table(table_name)
+    if not foreign_keys:
+        return None
+    columns = {}
+    for fk in foreign_keys:
+        other_table = fk["other_table"]
+        # Only expose the suggestion UI for referenced tables the actor can
+        # view - the JSON endpoint enforces this on every request too
+        if not await datasette.allowed(
+            action="view-table",
+            resource=TableResource(database=database_name, table=other_table),
+            actor=request.actor,
+        ):
+            continue
+        other_column = await _foreign_key_other_column(db, fk)
+        if other_column is None:
+            continue
+        columns[fk["column"]] = {
+            "table": other_table,
+            "column": other_column,
+            "url": "{}/-/foreign-key-suggestions?{}".format(
+                datasette.urls.table(database_name, table_name),
+                urllib.parse.urlencode({"column": fk["column"]}),
+            ),
+        }
+    return columns or None
 
 
 async def display_columns_and_rows(
@@ -1111,6 +1163,195 @@ class TableFragmentView(BaseView):
         return Response.html(html)
 
 
+FOREIGN_KEY_SUGGESTIONS_LIMIT = 10
+
+
+def _like_escape(value):
+    # Escape LIKE special characters so % and _ match literally
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+class TableForeignKeySuggestionsView(BaseView):
+    name = "table-foreign-key-suggestions"
+
+    def __init__(self, datasette):
+        self.ds = datasette
+
+    async def get(self, request):
+        try:
+            resolved = await self.ds.resolve_table(request)
+        except NotFound as e:
+            return _error([e.args[0]], 404)
+        db = resolved.db
+        database_name = db.name
+        table_name = resolved.table
+
+        if resolved.is_view:
+            return _error(["Foreign key suggestions are not available for views"], 400)
+
+        # Must be allowed to view the table the foreign key lives on
+        if not await self.ds.allowed(
+            action="view-table",
+            resource=TableResource(database=database_name, table=table_name),
+            actor=request.actor,
+        ):
+            return _error(["Permission denied"], 403)
+
+        column = request.args.get("column")
+        if not column:
+            return _error(['Missing required parameter: "column"'], 400)
+
+        fk = None
+        for foreign_key in await db.foreign_keys_for_table(table_name):
+            if foreign_key["column"] == column:
+                fk = foreign_key
+                break
+        if fk is None:
+            return _error(['Not a foreign key column: "{}"'.format(column)], 400)
+
+        other_table = fk["other_table"]
+        other_column = await _foreign_key_other_column(db, fk)
+        if other_column is None:
+            return _error(
+                ["Could not determine referenced column for {}".format(column)], 400
+            )
+
+        # Must also be allowed to view the referenced table, otherwise this
+        # endpoint would leak its contents
+        if not await self.ds.allowed(
+            action="view-table",
+            resource=TableResource(database=database_name, table=other_table),
+            actor=request.actor,
+        ):
+            return _error(["Permission denied"], 403)
+
+        q = request.args.get("q") or ""
+        label_column = await db.label_column_for_table(other_table)
+
+        # Column to build row page URLs from
+        other_pks = await db.primary_keys(other_table)
+        url_pk = None
+        if len(other_pks) == 1:
+            url_pk = other_pks[0]
+        elif not other_pks:
+            url_pk = "rowid"
+
+        select_columns = [other_column]
+        if label_column and label_column not in select_columns:
+            select_columns.append(label_column)
+        if url_pk and url_pk not in select_columns:
+            select_columns.append(url_pk)
+
+        select_sql = "select {} from {}".format(
+            ", ".join(escape_sqlite(c) for c in select_columns),
+            escape_sqlite(other_table),
+        )
+        limit = FOREIGN_KEY_SUGGESTIONS_LIMIT
+
+        exact_rows = []
+        other_rows = []
+        timed_out = False
+
+        if q:
+            # The indexed exact lookup runs separately, so it still returns
+            # when the fuzzy search on a large unindexed table times out
+            try:
+                exact_rows = (
+                    await db.execute(
+                        "{} where {} = :q limit 1".format(
+                            select_sql, escape_sqlite(other_column)
+                        ),
+                        {"q": q},
+                    )
+                ).rows
+            except QueryInterrupted:
+                timed_out = True
+
+            like_clauses = [
+                "cast({} as text) like :like escape '\\'".format(
+                    escape_sqlite(other_column)
+                )
+            ]
+            if label_column:
+                like_clauses.insert(
+                    0,
+                    "{} like :like escape '\\'".format(escape_sqlite(label_column)),
+                )
+            order_by = escape_sqlite(other_column)
+            if label_column:
+                order_by = "{} collate nocase, {}".format(
+                    escape_sqlite(label_column), escape_sqlite(other_column)
+                )
+            try:
+                other_rows = (
+                    await db.execute(
+                        "{} where {} order by {} limit {}".format(
+                            select_sql,
+                            " or ".join(like_clauses),
+                            order_by,
+                            limit + 1,
+                        ),
+                        {"like": "%{}%".format(_like_escape(q))},
+                    )
+                ).rows
+            except QueryInterrupted:
+                timed_out = True
+        else:
+            # No query - return the first rows, ordered by the referenced column
+            try:
+                other_rows = (
+                    await db.execute(
+                        "{} order by {} limit {}".format(
+                            select_sql, escape_sqlite(other_column), limit + 1
+                        )
+                    )
+                ).rows
+            except QueryInterrupted:
+                timed_out = True
+
+        # Exact matches come first, then other matches (de-duplicated)
+        combined = []
+        seen = set()
+        for row in itertools.chain(exact_rows, other_rows):
+            value = row[other_column]
+            if value in seen:
+                continue
+            seen.add(value)
+            combined.append(row)
+
+        truncated = len(other_rows) > limit or len(combined) > limit
+
+        def result_for_row(row):
+            value = row[other_column]
+            label = row[label_column] if label_column else None
+            if label is None or label == "":
+                label = str(value)
+            url = None
+            if url_pk is not None:
+                pk_value = row[url_pk]
+                if pk_value is not None:
+                    url = self.ds.urls.row(
+                        database_name, other_table, tilde_encode(str(pk_value))
+                    )
+            return {"value": value, "label": str(label), "url": url}
+
+        return Response.json(
+            {
+                "ok": True,
+                "database": database_name,
+                "table": table_name,
+                "column": column,
+                "query": q,
+                "other_table": other_table,
+                "other_column": other_column,
+                "label_column": label_column,
+                "results": [result_for_row(row) for row in combined[:limit]],
+                "truncated": truncated,
+                "timed_out": timed_out,
+            }
+        )
+
+
 async def _columns_to_select(table_columns, pks, request):
     columns = list(table_columns)
     if "_col" in request.args:
@@ -1842,6 +2083,9 @@ async def table_view_data(
         data["sort_desc"] = sort_desc
         data["table_insert_ui"] = await _table_insert_ui(
             datasette, request, db, database_name, table_name, is_view, pks
+        )
+        data["table_foreign_keys_ui"] = await _table_foreign_keys_ui(
+            datasette, request, db, database_name, table_name, is_view
         )
 
     return data, rows[:page_size], columns, expanded_columns, sql, next_url

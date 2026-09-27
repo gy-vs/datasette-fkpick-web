@@ -4,8 +4,12 @@
 
 {% block extra_head %}
 {{- super() -}}
-{% if table_insert_ui %}
+{% if table_insert_ui and table_foreign_keys_ui %}
+<script>window._datasetteTableData = {{ {"tableUrl": urls.table(database, table), "insertRow": table_insert_ui, "foreignKeys": table_foreign_keys_ui}|tojson }};</script>
+{% elif table_insert_ui %}
 <script>window._datasetteTableData = {{ {"tableUrl": urls.table(database, table), "insertRow": table_insert_ui}|tojson }};</script>
+{% elif table_foreign_keys_ui %}
+<script>window._datasetteTableData = {{ {"tableUrl": urls.table(database, table), "foreignKeys": table_foreign_keys_ui}|tojson }};</script>
 {% else %}
 <script>window._datasetteTableData = {{ {"tableUrl": urls.table(database, table)}|tojson }};</script>
 {% endif %}

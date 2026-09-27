@@ -1594,6 +1594,84 @@ textarea.row-edit-input {
     font-size: 0.78rem;
 }
 
+.row-edit-fk {
+    position: relative;
+    min-width: 0;
+}
+
+.row-edit-fk-suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    margin: 2px 0 0;
+    padding: 4px;
+    list-style: none;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.row-edit-fk-suggestions[hidden] {
+    display: none;
+}
+
+.row-edit-fk-suggestion {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--ink);
+}
+
+.row-edit-fk-suggestion.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+.row-edit-fk-label {
+    overflow-wrap: anywhere;
+}
+
+.row-edit-fk-value {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+}
+
+.row-edit-fk-suggestion.active .row-edit-fk-value {
+    color: rgba(255, 255, 255, 0.75);
+}
+
+.row-edit-fk-empty,
+.row-edit-fk-note {
+    padding: 6px 8px;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.row-edit-fk-current {
+    color: var(--muted);
+    font-size: 0.78rem;
+}
+
+.row-edit-fk-current[hidden] {
+    display: none;
+}
+
+.row-edit-fk-current a {
+    color: var(--accent);
+}
+
 .row-edit-empty {
     color: var(--muted);
     font-size: 0.9rem;

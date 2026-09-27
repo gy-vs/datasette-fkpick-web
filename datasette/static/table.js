@@ -496,6 +496,11 @@ function tableInsertData() {
   return window._datasetteTableData && window._datasetteTableData.insertRow;
 }
 
+function tableForeignKeysData() {
+  var data = window._datasetteTableData;
+  return (data && data.foreignKeys) || {};
+}
+
 function tableInsertUrl() {
   var data = tableInsertData();
   if (data && data.path) {
@@ -819,6 +824,272 @@ function rowEditValueType(value) {
   return "string";
 }
 
+/* Foreign key autocomplete for the insert/edit row dialogs.
+ * Suggestions come from the /-/foreign-key-suggestions JSON endpoint.
+ * The dropdown is only a convenience - typing a value manually and
+ * saving without picking a suggestion keeps working as before. */
+function attachForeignKeyAutocomplete(control, controlWrap, foreignKey) {
+  var wrapper = document.createElement("div");
+  wrapper.className = "row-edit-fk";
+  control.parentNode.insertBefore(wrapper, control);
+  wrapper.appendChild(control);
+
+  control.setAttribute("autocomplete", "off");
+  control.setAttribute("aria-autocomplete", "list");
+
+  var listbox = document.createElement("ul");
+  listbox.className = "row-edit-fk-suggestions";
+  listbox.setAttribute("role", "listbox");
+  listbox.hidden = true;
+  wrapper.appendChild(listbox);
+
+  var current = document.createElement("div");
+  current.className = "row-edit-fk-current";
+  current.hidden = true;
+  controlWrap.appendChild(current);
+
+  var state = {
+    items: [],
+    activeIndex: -1,
+    isOpen: false,
+    requestSeq: 0,
+    abortController: null,
+    debounceTimer: null,
+  };
+
+  function closeList() {
+    state.isOpen = false;
+    state.items = [];
+    state.activeIndex = -1;
+    listbox.hidden = true;
+    listbox.innerHTML = "";
+  }
+
+  function suggestionsUrl(query) {
+    var url = new URL(foreignKey.url, location.href);
+    url.searchParams.set("q", query);
+    return url.toString();
+  }
+
+  function updateCurrent(result) {
+    current.textContent = "";
+    if (!result) {
+      current.hidden = true;
+      return;
+    }
+    current.appendChild(document.createTextNode("Current: "));
+    if (result.url) {
+      var link = document.createElement("a");
+      link.href = result.url;
+      link.textContent = result.label;
+      current.appendChild(link);
+    } else {
+      var label = document.createElement("span");
+      label.textContent = result.label;
+      current.appendChild(label);
+    }
+    if (String(result.label) !== String(result.value)) {
+      current.appendChild(document.createTextNode(" (" + result.value + ")"));
+    }
+    current.hidden = false;
+  }
+
+  function showCurrentNotFound(value) {
+    current.textContent =
+      "Current: " + value + " (no matching row in " + foreignKey.table + ")";
+    current.hidden = false;
+  }
+
+  function setActive(index) {
+    state.activeIndex = index;
+    Array.from(listbox.querySelectorAll(".row-edit-fk-suggestion")).forEach(
+      function (el, i) {
+        el.classList.toggle("active", i === index);
+        el.setAttribute("aria-selected", i === index ? "true" : "false");
+      },
+    );
+    var active = listbox.querySelector(".row-edit-fk-suggestion.active");
+    if (active) {
+      active.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function selectItem(result) {
+    control.value = String(result.value);
+    closeList();
+    updateCurrent(result);
+    control.focus();
+  }
+
+  function renderItems(results, timedOut) {
+    state.items = results;
+    state.activeIndex = -1;
+    listbox.innerHTML = "";
+    if (!results.length) {
+      var empty = document.createElement("li");
+      empty.className = "row-edit-fk-empty";
+      empty.textContent = timedOut
+        ? "Search timed out - keep typing to narrow the results"
+        : "No matching rows";
+      listbox.appendChild(empty);
+    } else {
+      results.forEach(function (result) {
+        var item = document.createElement("li");
+        item.className = "row-edit-fk-suggestion";
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", "false");
+        var label = document.createElement("span");
+        label.className = "row-edit-fk-label";
+        label.textContent = result.label;
+        item.appendChild(label);
+        if (String(result.label) !== String(result.value)) {
+          var value = document.createElement("span");
+          value.className = "row-edit-fk-value";
+          value.textContent = result.value;
+          item.appendChild(value);
+        }
+        item.addEventListener("mousedown", function (ev) {
+          ev.preventDefault();
+          selectItem(result);
+        });
+        listbox.appendChild(item);
+      });
+      if (timedOut) {
+        var note = document.createElement("li");
+        note.className = "row-edit-fk-note";
+        note.textContent = "Search timed out - showing partial results";
+        listbox.appendChild(note);
+      }
+    }
+    state.isOpen = true;
+    listbox.hidden = false;
+  }
+
+  function fetchSuggestions(query) {
+    state.requestSeq += 1;
+    var seq = state.requestSeq;
+    if (state.abortController) {
+      state.abortController.abort();
+    }
+    var controller = new AbortController();
+    state.abortController = controller;
+    fetch(suggestionsUrl(query), {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error("HTTP " + response.status);
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        if (seq !== state.requestSeq) {
+          return;
+        }
+        if (!data || data.ok === false) {
+          closeList();
+          return;
+        }
+        renderItems(data.results || [], !!data.timed_out);
+      })
+      .catch(function (error) {
+        if (error && error.name === "AbortError") {
+          return;
+        }
+        if (seq !== state.requestSeq) {
+          return;
+        }
+        // Suggestions are best-effort - never break the dialog for them
+        closeList();
+      });
+  }
+
+  control.addEventListener("input", function () {
+    window.clearTimeout(state.debounceTimer);
+    state.debounceTimer = window.setTimeout(function () {
+      fetchSuggestions(control.value);
+    }, 200);
+  });
+
+  control.addEventListener("keydown", function (ev) {
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (!state.isOpen) {
+        fetchSuggestions(control.value);
+        return;
+      }
+      if (!state.items.length) {
+        return;
+      }
+      var delta = ev.key === "ArrowDown" ? 1 : -1;
+      var index = state.activeIndex + delta;
+      if (index < 0) {
+        index = state.items.length - 1;
+      }
+      if (index >= state.items.length) {
+        index = 0;
+      }
+      setActive(index);
+    } else if (ev.key === "Enter") {
+      if (
+        state.isOpen &&
+        state.activeIndex >= 0 &&
+        state.items[state.activeIndex]
+      ) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        selectItem(state.items[state.activeIndex]);
+      }
+    } else if (ev.key === "Escape") {
+      if (state.isOpen) {
+        // Close only the dropdown, not the whole dialog
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeList();
+      }
+    }
+  });
+
+  control.addEventListener("blur", function () {
+    closeList();
+  });
+
+  // If the field already has a value, show which row it points at
+  var initialValue = control.value;
+  if (initialValue !== "") {
+    fetch(suggestionsUrl(initialValue), {
+      headers: { Accept: "application/json" },
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error("HTTP " + response.status);
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        if (!data || data.ok === false) {
+          return;
+        }
+        if (control.value !== initialValue) {
+          // The user changed the value while the lookup was in flight
+          return;
+        }
+        var match = (data.results || []).find(function (result) {
+          return String(result.value) === initialValue;
+        });
+        if (match) {
+          updateCurrent(match);
+        } else {
+          showCurrentNotFound(initialValue);
+        }
+      })
+      .catch(function () {
+        // Leave the current-value note hidden if the lookup fails
+      });
+  }
+}
+
 function createRowEditField(column, value, isPk, columnType, index, options) {
   options = options || {};
   var field = document.createElement("div");
@@ -948,6 +1219,14 @@ function createRowEditField(column, value, isPk, columnType, index, options) {
   }
   if (meta.textContent) {
     controlWrap.appendChild(meta);
+  }
+  if (
+    options.foreignKey &&
+    window.fetch &&
+    control.nodeName === "INPUT" &&
+    !control.readOnly
+  ) {
+    attachForeignKeyAutocomplete(control, controlWrap, options.foreignKey);
   }
   field.appendChild(label);
   field.appendChild(controlWrap);
@@ -1296,6 +1575,7 @@ function renderRowEditFields(state, data) {
   var columns = data.columns || (row ? Object.keys(row) : []);
   var primaryKeys = data.primary_keys || [];
   var columnTypes = data.column_types || {};
+  var foreignKeys = tableForeignKeysData();
 
   state.fields.innerHTML = "";
   columns.forEach(function (column, index) {
@@ -1308,6 +1588,7 @@ function renderRowEditFields(state, data) {
         index,
         {
           primaryKeyReadonly: true,
+          foreignKey: foreignKeys[column] || null,
         },
       ),
     );
@@ -1322,6 +1603,7 @@ function renderRowEditFields(state, data) {
 
 function renderRowInsertFields(state, data) {
   var columns = data.columns || [];
+  var foreignKeys = tableForeignKeysData();
 
   state.fields.innerHTML = "";
   columns.forEach(function (column, index) {
@@ -1339,6 +1621,7 @@ function renderRowInsertFields(state, data) {
           primaryKeyReadonly: false,
           useDefaultInitially: column.has_default,
           valueType: column.value_type,
+          foreignKey: foreignKeys[column.name] || null,
         },
       ),
     );

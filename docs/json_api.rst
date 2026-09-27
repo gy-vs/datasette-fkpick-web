@@ -1425,6 +1425,72 @@ looks like:
 The column in the foreign key table that is used for the label can be specified
 in ``datasette.yaml`` - see :ref:`table_configuration_label_column`.
 
+.. _TableForeignKeySuggestionsView:
+
+Foreign key suggestions
+-----------------------
+
+Tables with foreign key columns provide a JSON endpoint that suggests rows
+from the referenced table. This is designed for building autocomplete
+interfaces, such as the insert and edit row dialogs::
+
+    GET /<database>/<table>/-/foreign-key-suggestions?column=<column>&q=<query>
+
+The ``column`` parameter is required and must be the name of a column with a
+single-column foreign key to another table. The ``q`` parameter is optional
+and filters the suggested rows.
+
+This requires the :ref:`actions_view_table` permission on both the table in
+the URL and the referenced table. If either is missing the endpoint returns a
+``403`` error, so it cannot be used to see rows from tables the current actor
+is not allowed to view.
+
+The response looks like this:
+
+.. code-block:: json
+
+    {
+        "ok": true,
+        "database": "data",
+        "table": "orders",
+        "column": "customer_id",
+        "query": "ali",
+        "other_table": "customers",
+        "other_column": "id",
+        "label_column": "name",
+        "results": [
+            {
+                "value": 12,
+                "label": "Alice",
+                "url": "/data/customers/12"
+            }
+        ],
+        "truncated": false,
+        "timed_out": false
+    }
+
+Each item in ``results`` describes a row in the referenced table:
+
+- ``value`` is the raw value of the referenced column, using its original
+  JSON type. This is the value to store in the foreign key column.
+- ``label`` is the label for that row: the value of the referenced table's
+  :ref:`label column <table_configuration_label_column>` if one is configured
+  or detected, otherwise the same as ``value``.
+- ``url`` is the path to the page for that row, or ``null`` if it could not
+  be determined, for example if the referenced table has a compound primary
+  key.
+
+Rows where the referenced column exactly matches ``q`` are returned first,
+followed by rows where the label or the referenced column contains ``q``,
+matched case-insensitively. The ``%`` and ``_`` characters in ``q`` are
+treated literally, not as ``LIKE`` wildcards. If ``q`` is omitted, the first
+rows ordered by the referenced column are returned.
+
+At most ten rows are returned. ``truncated`` is ``true`` if more rows
+matched. ``timed_out`` is ``true`` if the search exceeded the
+:ref:`setting_sql_time_limit_ms` time limit - in that case ``results``
+contains only exact matches, or may be empty.
+
 .. _json_api_discover_alternate:
 
 Discovering the JSON for a page
