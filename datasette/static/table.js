@@ -782,6 +782,288 @@ function initRowDeleteActions(manager) {
   });
 }
 
+/* Foreign key autocomplete for the insert and edit row dialogs.
+ * Uses window._datasetteTableData.foreignKeys, a map of column name to
+ * {table, url} where url is the foreign-key-suggestions JSON endpoint for
+ * that column. The dropdown only ever assists - any value typed by hand is
+ * saved exactly as before. */
+
+var fkSuggestionListIdCounter = 0;
+
+function tableForeignKeysData() {
+  var data = window._datasetteTableData;
+  return (data && data.foreignKeys) || {};
+}
+
+function closeFkSuggestions(state) {
+  state.open = false;
+  state.items = [];
+  state.activeIndex = -1;
+  state.listbox.hidden = true;
+  state.listbox.innerHTML = "";
+  state.control.setAttribute("aria-expanded", "false");
+  state.control.removeAttribute("aria-activedescendant");
+}
+
+function setFkActiveSuggestion(state, index) {
+  state.activeIndex = index;
+  Array.from(state.listbox.querySelectorAll(".fk-suggestion")).forEach(
+    function (option, i) {
+      var isActive = i === index;
+      option.classList.toggle("active", isActive);
+      option.setAttribute("aria-selected", isActive ? "true" : "false");
+      if (isActive) {
+        state.control.setAttribute("aria-activedescendant", option.id);
+        option.scrollIntoView({ block: "nearest" });
+      }
+    },
+  );
+}
+
+function showFkCurrentTarget(state, item) {
+  if (!item) {
+    state.current.hidden = true;
+    state.current.innerHTML = "";
+    return;
+  }
+  state.current.innerHTML = "";
+  state.current.appendChild(document.createTextNode("→ "));
+  var link = document.createElement("a");
+  link.href = item.url;
+  link.textContent = item.label;
+  link.title = "Open the referenced row";
+  link.target = "_blank";
+  link.rel = "noopener";
+  state.current.appendChild(link);
+  if (String(item.value) !== item.label) {
+    var value = document.createElement("span");
+    value.className = "fk-current-value";
+    value.textContent = " (" + item.value + ")";
+    state.current.appendChild(value);
+  }
+  state.current.hidden = false;
+}
+
+function pickFkSuggestion(state, item) {
+  state.control.value = String(item.value);
+  closeFkSuggestions(state);
+  showFkCurrentTarget(state, item);
+  state.control.focus();
+}
+
+function renderFkSuggestions(state, items) {
+  state.items = items;
+  state.listbox.innerHTML = "";
+  if (!items.length) {
+    closeFkSuggestions(state);
+    return;
+  }
+  items.forEach(function (item, index) {
+    var option = document.createElement("li");
+    option.className = "fk-suggestion";
+    option.id = state.listbox.id + "-option-" + index;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
+    var label = document.createElement("span");
+    label.className = "fk-suggestion-label";
+    label.textContent = item.label;
+    option.appendChild(label);
+    if (String(item.value) !== item.label) {
+      var value = document.createElement("span");
+      value.className = "fk-suggestion-value";
+      value.textContent = item.value;
+      option.appendChild(value);
+    }
+    option.addEventListener("mousedown", function (ev) {
+      ev.preventDefault();
+      pickFkSuggestion(state, item);
+    });
+    option.addEventListener("mouseenter", function () {
+      setFkActiveSuggestion(state, index);
+    });
+    state.listbox.appendChild(option);
+  });
+  state.activeIndex = -1;
+  state.open = true;
+  state.listbox.hidden = false;
+  state.control.setAttribute("aria-expanded", "true");
+}
+
+function fetchFkSuggestions(state, query) {
+  state.requestId += 1;
+  var requestId = state.requestId;
+  fetch(state.fkInfo.url + "&q=" + encodeURIComponent(query), {
+    headers: { Accept: "application/json" },
+  })
+    .then(function (response) {
+      if (!response.ok) {
+        throw new Error("HTTP " + response.status);
+      }
+      return response.json();
+    })
+    .then(function (data) {
+      if (requestId !== state.requestId) {
+        return;
+      }
+      if (!data || data.ok === false) {
+        closeFkSuggestions(state);
+        return;
+      }
+      renderFkSuggestions(state, data.rows || []);
+    })
+    .catch(function () {
+      if (requestId === state.requestId) {
+        closeFkSuggestions(state);
+      }
+    });
+}
+
+function lookupFkCurrentTarget(state, value) {
+  state.requestId += 1;
+  var requestId = state.requestId;
+  fetch(state.fkInfo.url + "&q=" + encodeURIComponent(value), {
+    headers: { Accept: "application/json" },
+  })
+    .then(function (response) {
+      if (!response.ok) {
+        throw new Error("HTTP " + response.status);
+      }
+      return response.json();
+    })
+    .then(function (data) {
+      if (requestId !== state.requestId || !data || data.ok === false) {
+        return;
+      }
+      var match = null;
+      (data.rows || []).forEach(function (row) {
+        if (match === null && String(row.value) === value) {
+          match = row;
+        }
+      });
+      if (match) {
+        showFkCurrentTarget(state, match);
+      }
+    })
+    .catch(function () {});
+}
+
+function attachFkAutocomplete(control, fkInfo) {
+  fkSuggestionListIdCounter += 1;
+
+  var inputWrap = document.createElement("div");
+  inputWrap.className = "fk-input-wrap";
+  control.parentNode.insertBefore(inputWrap, control);
+  inputWrap.appendChild(control);
+
+  var listbox = document.createElement("ul");
+  listbox.className = "fk-suggestions";
+  listbox.id = "fk-suggestions-" + fkSuggestionListIdCounter;
+  listbox.setAttribute("role", "listbox");
+  listbox.hidden = true;
+  inputWrap.appendChild(listbox);
+
+  var wrap = document.createElement("div");
+  wrap.className = "fk-control";
+  inputWrap.parentNode.insertBefore(wrap, inputWrap);
+  wrap.appendChild(inputWrap);
+
+  var current = document.createElement("span");
+  current.className = "fk-current";
+  current.hidden = true;
+  wrap.appendChild(current);
+
+  control.setAttribute("role", "combobox");
+  control.setAttribute("aria-autocomplete", "list");
+  control.setAttribute("aria-expanded", "false");
+  control.setAttribute("aria-controls", listbox.id);
+  control.setAttribute("autocomplete", "off");
+
+  var state = {
+    control: control,
+    fkInfo: fkInfo,
+    listbox: listbox,
+    current: current,
+    items: [],
+    activeIndex: -1,
+    open: false,
+    requestId: 0,
+    debounceTimer: null,
+  };
+
+  control.addEventListener("input", function () {
+    showFkCurrentTarget(state, null);
+    window.clearTimeout(state.debounceTimer);
+    state.requestId += 1;
+    var query = control.value.trim();
+    if (!query) {
+      closeFkSuggestions(state);
+      return;
+    }
+    state.debounceTimer = window.setTimeout(function () {
+      fetchFkSuggestions(state, query);
+    }, 200);
+  });
+
+  control.addEventListener("keydown", function (ev) {
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      if (!state.open) {
+        return;
+      }
+      ev.preventDefault();
+      var index = state.activeIndex + (ev.key === "ArrowDown" ? 1 : -1);
+      if (index < 0) {
+        index = state.items.length - 1;
+      }
+      if (index >= state.items.length) {
+        index = 0;
+      }
+      setFkActiveSuggestion(state, index);
+      return;
+    }
+    if (ev.key === "Enter") {
+      if (state.open && state.activeIndex >= 0) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        pickFkSuggestion(state, state.items[state.activeIndex]);
+      } else if (state.open) {
+        closeFkSuggestions(state);
+      }
+      return;
+    }
+    if (ev.key === "Escape" && state.open) {
+      // Close only the dropdown, not the whole dialog
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeFkSuggestions(state);
+    }
+  });
+
+  control.addEventListener("blur", function () {
+    closeFkSuggestions(state);
+  });
+
+  return state;
+}
+
+function enhanceForeignKeyFields(fieldsContainer, showCurrent) {
+  if (!window.fetch) {
+    return;
+  }
+  var foreignKeys = tableForeignKeysData();
+  Array.from(fieldsContainer.querySelectorAll("input.row-edit-input")).forEach(
+    function (control) {
+      var fkInfo = foreignKeys[control.name];
+      if (!fkInfo || control.readOnly) {
+        return;
+      }
+      var state = attachFkAutocomplete(control, fkInfo);
+      if (showCurrent && control.value) {
+        lookupFkCurrentTarget(state, control.value);
+      }
+    },
+  );
+}
+
 function valueToEditText(value) {
   if (value === null || typeof value === "undefined") {
     return "";
@@ -1315,6 +1597,7 @@ function renderRowEditFields(state, data) {
 
   state.hasLoaded = true;
   updateRowEditDialogButtons(state);
+  enhanceForeignKeyFields(state.fields, true);
   var firstEditable = state.fields.querySelector(".row-edit-input:not([readonly])");
   var firstField = state.fields.querySelector(".row-edit-input");
   (firstEditable || firstField || state.cancelButton).focus();
@@ -1353,6 +1636,7 @@ function renderRowInsertFields(state, data) {
 
   state.hasLoaded = true;
   updateRowEditDialogButtons(state);
+  enhanceForeignKeyFields(state.fields, false);
   var firstControl = state.fields.querySelector(
     ".row-edit-default-set-value, .row-edit-input:not(:disabled)",
   );

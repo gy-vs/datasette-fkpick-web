@@ -1526,6 +1526,90 @@ textarea.row-edit-input {
     background: var(--paper);
 }
 
+.fk-control {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+}
+
+.fk-input-wrap {
+    position: relative;
+    min-width: 0;
+}
+
+.fk-suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    margin: 2px 0 0;
+    padding: 4px;
+    list-style: none;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+    max-height: 216px;
+    overflow-y: auto;
+}
+
+.fk-suggestions[hidden] {
+    display: none;
+}
+
+.fk-suggestion {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--ink);
+}
+
+.fk-suggestion.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+.fk-suggestion-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fk-suggestion-value {
+    flex-shrink: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+
+.fk-suggestion.active .fk-suggestion-value {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.fk-current {
+    font-size: 0.78rem;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+}
+
+.fk-current[hidden] {
+    display: none;
+}
+
+.fk-current a {
+    color: var(--accent);
+}
+
+.fk-current-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .row-edit-default {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 7.25rem;

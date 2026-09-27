@@ -87,6 +87,7 @@ from .views.table import (
     TableSetColumnTypeView,
     TableDropView,
     TableFragmentView,
+    TableForeignKeySuggestionsView,
     table_view,
 )
 from .views.row import RowView, RowDeleteView, RowUpdateView
@@ -2615,6 +2616,10 @@ class Datasette:
         add_route(
             TableFragmentView.as_view(self),
             r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/fragment$",
+        )
+        add_route(
+            TableForeignKeySuggestionsView.as_view(self),
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/foreign-key-suggestions$",
         )
         add_route(
             TableDropView.as_view(self),

@@ -1425,6 +1425,61 @@ looks like:
 The column in the foreign key table that is used for the label can be specified
 in ``datasette.yaml`` - see :ref:`table_configuration_label_column`.
 
+.. _TableForeignKeySuggestionsView:
+
+Foreign key suggestions
+-----------------------
+
+::
+
+    GET /<database>/<table>/-/foreign-key-suggestions?column=<column>&q=<query>
+
+This endpoint searches the table referenced by a foreign key column, returning
+rows that match a search string. The insert and edit row dialogs use it to
+offer autocomplete for foreign key columns, and plugins can use it to build
+their own row pickers.
+
+The ``column`` parameter is required and must name a column on this table that
+is a single-column foreign key. The ``q`` parameter is the search string - if
+it is omitted or empty, no rows are returned. The optional ``limit`` parameter
+sets the maximum number of rows returned, between 1 and 100, defaulting to 10.
+
+The response looks like this:
+
+.. code-block:: json
+
+    {
+        "ok": true,
+        "rows": [
+            {
+                "value": 12,
+                "label": "Alice",
+                "url": "/data/customers/12"
+            }
+        ]
+    }
+
+Each row shows a row from the referenced table:
+
+- ``value`` is the raw value of the referenced column, with its SQLite type
+  preserved - an integer column produces a JSON integer, not a string.
+- ``label`` is the text of the label column for the referenced table - the
+  same label used for foreign key links in the HTML interface, respecting the
+  :ref:`table_configuration_label_column` configuration. If the referenced
+  table has no label column, the label is the value rendered as a string.
+- ``url`` is the path to the page for that row.
+
+A row whose referenced column exactly equals ``q`` is always returned first,
+followed by rows where the label column - or the referenced column, treated as
+text - contains ``q``. The characters ``%`` and ``_`` in ``q`` are matched
+literally.
+
+The actor must have :ref:`view-table <actions_view_table>` permission for both
+this table and the referenced table, otherwise the endpoint returns a ``403``
+error. If the search query is interrupted by the SQL time limit, for example
+on a very large referenced table, the endpoint returns the rows gathered so
+far - possibly none - with a ``200`` status instead of an error.
+
 .. _json_api_discover_alternate:
 
 Discovering the JSON for a page
